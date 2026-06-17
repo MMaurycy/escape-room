@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <title>VR Escape Room — HORROR v3</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+  <script src="aframe.min.js"></script>
 
   <script>
   /* =====================================================================
@@ -40,15 +40,20 @@
   function kickAudio(){ if(AUDIO_STARTED) return; AUDIO_STARTED=true; startAmbient(); }
   window.addEventListener('click', kickAudio);
 
-  /* PROCEDURALNA TEKSTURA KAMIENIA + parametry PBR (roughness/metalness) */
-  AFRAME.registerComponent('stone-mat',{schema:{color:{default:'#2b2b30'},repeat:{default:3}},init:function(){
+  /* PROCEDURALNA TEKSTURA KAMIENIA + parametry PBR (roughness/metalness)
+     CACHE: drogie rysowanie canvasu wykonuje sie RAZ na kolor (a nie raz na sciane). */
+  var STONE_CACHE={};
+  function makeStoneCanvas(color){ if(STONE_CACHE[color]) return STONE_CACHE[color];
     var cv=document.createElement('canvas'); cv.width=cv.height=256; var x=cv.getContext('2d');
-    x.fillStyle=this.data.color; x.fillRect(0,0,256,256);
-    for(var i=0;i<5000;i++){ var v=Math.floor(Math.random()*50-25);
+    x.fillStyle=color; x.fillRect(0,0,256,256);
+    for(var i=0;i<2200;i++){ var v=Math.floor(Math.random()*50-25);
       x.fillStyle='rgba('+(40+v)+','+(40+v)+','+(46+v)+',0.5)'; x.fillRect(Math.random()*256,Math.random()*256,2,2); }
     x.strokeStyle='rgba(0,0,0,0.55)'; x.lineWidth=2;
     for(var r=0;r<256;r+=42){ x.beginPath(); x.moveTo(0,r); x.lineTo(256,r); x.stroke();
       var off=(r/42)%2?21:0; for(var cX=off;cX<256;cX+=42){ x.beginPath(); x.moveTo(cX,r); x.lineTo(cX,r+42); x.stroke(); } }
+    STONE_CACHE[color]=cv; return cv; }
+  AFRAME.registerComponent('stone-mat',{schema:{color:{default:'#2b2b30'},repeat:{default:3}},init:function(){
+    var cv=makeStoneCanvas(this.data.color);
     var tex=new THREE.CanvasTexture(cv); tex.wrapS=tex.wrapT=THREE.RepeatWrapping; tex.repeat.set(this.data.repeat,this.data.repeat);
     var self=this; var apply=function(){ var m=self.el.getObject3D('mesh');
       if(!m){ self.el.addEventListener('object3dset',apply,{once:true}); return; }
