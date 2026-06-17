@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>VR Escape Room — HORROR v3</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+
+  <script>
+  /* =====================================================================
+     DZWIEK PROCEDURALNY (Web Audio) — nic nie pobieramy z sieci.
+     ===================================================================== */
+  var ACTX=null, AUDIO_STARTED=false;
+  function ensureAudio(){ if(!ACTX){ try{ ACTX=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){return null;} }
+    if(ACTX.state==='suspended') ACTX.resume(); return ACTX; }
+  function startAmbient(){ var c=ensureAudio(); if(!c) return; try{
+      var g=c.createGain(); g.gain.value=0.07; g.connect(c.destination);
+      var lp=c.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=380; lp.connect(g);
+      [55,58.3,82.5].forEach(function(f){ var o=c.createOscillator(); o.type='sawtooth'; o.frequency.value=f;
+        var og=c.createGain(); og.gain.value=0.5; o.connect(og); og.connect(lp); o.start(); });
+      var n=c.sampleRate*2, buf=c.createBuffer(1,n,c.sampleRate), d=buf.getChannelData(0);
+      for(var i=0;i<n;i++) d[i]=Math.random()*2-1;
+      var src=c.createBufferSource(); src.buffer=buf; src.loop=true;
+      var bp=c.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=320;
+      var ng=c.createGain(); ng.gain.value=0.045; src.connect(bp); bp.connect(ng); ng.connect(c.destination); src.start();
+      scheduleStinger();
+    }catch(e){} }
+  function scheduleStinger(){ setTimeout(function(){ randomStinger(); scheduleStinger(); }, 9000+Math.random()*13000); }
+  function randomStinger(){ var c=ensureAudio(); if(!c) return; var o=c.createOscillator(); o.type='sine';
+    var b=110+Math.random()*220; o.frequency.value=b; var g=c.createGain(); g.gain.value=0; o.connect(g); g.connect(c.destination);
+    var t=c.currentTime; g.gain.linearRampToValueAtTime(0.05,t+0.6); g.gain.linearRampToValueAtTime(0,t+2.6);
+    o.frequency.linearRampToValueAtTime(b*0.7,t+2.6); o.start(t); o.stop(t+2.7); }
+  function playStinger(){ var c=ensureAudio(); if(!c) return; var o=c.createOscillator(); o.type='sawtooth'; o.frequency.value=240;
+    var g=c.createGain(); g.gain.value=0; o.connect(g); g.connect(c.destination); var t=c.currentTime;
+    g.gain.linearRampToValueAtTime(0.2,t+0.02); g.gain.exponentialRampToValueAtTime(0.001,t+1.2);
+    o.frequency.exponentialRampToValueAtTime(55,t+1.2); o.start(t); o.stop(t+1.3); }
+  function playCreak(){ var c=ensureAudio(); if(!c) return; var o=c.createOscillator(); o.type='square'; o.frequency.value=95;
+    var g=c.createGain(); g.gain.value=0.05; o.connect(g); g.connect(c.destination); var t=c.currentTime;
+    o.frequency.linearRampToValueAtTime(68,t+0.4); g.gain.linearRampToValueAtTime(0,t+0.5); o.start(t); o.stop(t+0.55); }
+  function kickAudio(){ if(AUDIO_STARTED) return; AUDIO_STARTED=true; startAmbient(); }
+  window.addEventListener('click', kickAudio);
+
+  /* PROCEDURALNA TEKSTURA KAMIENIA + parametry PBR (roughness/metalness) */
+  AFRAME.registerComponent('stone-mat',{schema:{color:{default:'#2b2b30'},repeat:{default:3}},init:function(){
+    var cv=document.createElement('canvas'); cv.width=cv.height=256; var x=cv.getContext('2d');
+    x.fillStyle=this.data.color; x.fillRect(0,0,256,256);
+    for(var i=0;i<5000;i++){ var v=Math.floor(Math.random()*50-25);
+      x.fillStyle='rgba('+(40+v)+','+(40+v)+','+(46+v)+',0.5)'; x.fillRect(Math.random()*256,Math.random()*256,2,2); }
+    x.strokeStyle='rgba(0,0,0,0.55)'; x.lineWidth=2;
+    for(var r=0;r<256;r+=42){ x.beginPath(); x.moveTo(0,r); x.lineTo(256,r); x.stroke();
+      var off=(r/42)%2?21:0; for(var cX=off;cX<256;cX+=42){ x.beginPath(); x.moveTo(cX,r); x.lineTo(cX,r+42); x.stroke(); } }
+    var tex=new THREE.CanvasTexture(cv); tex.wrapS=tex.wrapT=THREE.RepeatWrapping; tex.repeat.set(this.data.repeat,this.data.repeat);
+    var self=this; var apply=function(){ var m=self.el.getObject3D('mesh');
+      if(!m){ self.el.addEventListener('object3dset',apply,{once:true}); return; }
+      m.material.map=tex; m.material.roughness=0.85; m.material.metalness=0.1; m.material.needsUpdate=true; };
+    apply();
+  }});
+
+  /* MIGOCZACA POCHODNIA */
+  AFRAME.registerComponent('flicker',{init:function(){ var s=this;
+    this.iv=setInterval(function(){ s.el.setAttribute('light','intensity',0.6+Math.random()*0.9); },100+Math.random()*120); },
+    remove:function(){ clearInterval(this.iv); }});
+
+  /* SOLID — rejestruje bryle kolizji (world AABB) do listy systemu */
+  AFRAME.registerComponent('solid',{init:function(){ var self=this;
+    var add=function(){ var m=self.el.getObject3D('mesh');
+      if(!m){ self.el.addEventListener('object3dset',add,{once:true}); return; }
+      self.el.object3D.updateMatrixWorld(true);
+      var b=new THREE.Box3().setFromObject(self.el.object3D);
+      self.el.sceneEl.systems.game.solids.push({minx:b.min.x,maxx:b.max.x,minz:b.min.z,maxz:b.max.z}); };
+    add();
+  }});
+
+  /* RUCH GRACZA: WASD + galka VR + skok + grawitacja + kolizja AABB */
+  AFRAME.registerComponent('player-move',{schema:{speed:{default:3},jump:{default:5},gravity:{default:-13},radius:{default:0.35}},
+    init:function(){ var s=this; this.vy=0; this.onGround=true; this.keys={}; this.axis={x:0,y:0};
+      window.addEventListener('keydown',function(e){ s.keys[e.code]=true; if(e.code==='Space') s.tryJump(); });
+      window.addEventListener('keyup',function(e){ s.keys[e.code]=false; });
+      this.el.sceneEl.addEventListener('thumbstickmoved',function(e){ s.axis.x=e.detail.x; s.axis.y=e.detail.y; });
+      this.el.sceneEl.addEventListener('abuttondown',function(){ s.tryJump(); });
+      this.el.sceneEl.addEventListener('bbuttondown',function(){ s.tryJump(); });
+    },
+    tryJump:function(){ if(this.onGround){ this.vy=this.data.jump; this.onGround=false; } },
+    collides:function(x,z){ var r=this.data.radius, S=this.el.sceneEl.systems.game.solids;
+      for(var i=0;i<S.length;i++){ var w=S[i];
+        if(x>w.minx-r && x<w.maxx+r && z>w.minz-r && z<w.maxz+r) return true; } return false; },
+    tick:function(t,dt){ if(!dt) return; dt=Math.min(dt,50)/1000;
+      var cam=document.querySelector('#cam'); if(!cam) return;
+      var fwd=new THREE.Vector3(); cam.object3D.getWorldDirection(fwd); fwd.y=0;
+      if(fwd.lengthSq()<1e-5) return; fwd.normalize();
+      var right=new THREE.Vector3().crossVectors(fwd,new THREE.Vector3(0,1,0)).normalize();
+      var f=0,s=0;
+      if(this.keys['KeyW']) f+=1; if(this.keys['KeyS']) f-=1;
+      if(this.keys['KeyA']) s-=1; if(this.keys['KeyD']) s+=1;
+      f+=(-this.axis.y); s+=this.axis.x;                 // galka VR
+      var disp=new THREE.Vector3();
+      disp.addScaledVector(fwd,f); disp.addScaledVector(right,s);
+      if(disp.lengthSq()>0){ disp.normalize().multiplyScalar(this.data.speed*dt); }
+      var p=this.el.object3D.position;
+      if(disp.x && !this.collides(p.x+disp.x,p.z)) p.x+=disp.x;   // os X (slizg po scianie)
+      if(disp.z && !this.collides(p.x,p.z+disp.z)) p.z+=disp.z;   // os Z
+      this.vy+=this.data.gravity*dt; p.y+=this.vy*dt;             // grawitacja + skok
+      if(p.y<=0){ p.y=0; this.vy=0; this.onGround=true; }
+    }});
+
+  /* AKTUALIZACJA SLUCHACZA 3D AUDIO z pozycji kamery (na potrzeby PannerNode) */
+  AFRAME.registerComponent('audio-listener-rig',{tick:function(){ if(!ACTX) return;
+    var o=this.el.object3D; var p=o.getWorldPosition(new THREE.Vector3()); var q=o.getWorldQuaternion(new THREE.Quaternion());
+    var f=new THREE.Vector3(0,0,-1).applyQuaternion(q), u=new THREE.Vector3(0,1,0).applyQuaternion(q); var L=ACTX.listener;
+    if(L.positionX){ L.positionX.value=p.x;L.positionY.value=p.y;L.positionZ.value=p.z;
+      L.forwardX.value=f.x;L.forwardY.value=f.y;L.forwardZ.value=f.z; L.upX.value=u.x;L.upY.value=u.y;L.upZ.value=u.z; }
+    else { L.setPosition(p.x,p.y,p.z); L.setOrientation(f.x,f.y,f.z,u.x,u.y,u.z); }
+  }});
+
+  /* DZWIEKOWA LATARNIA (klucz w labiryncie) — pulsujacy ton 3D z PannerNode */
+  AFRAME.registerComponent('audio-beacon',{init:function(){ this.on=false; },
+    tick:function(){ if(this.on||!AUDIO_STARTED||!ACTX) return; this.on=true; this.start(); },
+    start:function(){ var c=ACTX; var pos=this.el.object3D.getWorldPosition(new THREE.Vector3());
+      var pan=c.createPanner(); pan.panningModel='HRTF'; pan.distanceModel='inverse';
+      pan.refDistance=1; pan.maxDistance=40; pan.rolloffFactor=1.4;
+      if(pan.positionX){ pan.positionX.value=pos.x; pan.positionY.value=pos.y; pan.positionZ.value=pos.z; }
+      else pan.setPosition(pos.x,pos.y,pos.z);
+      var osc=c.createOscillator(); osc.type='sine'; osc.frequency.value=320;
+      var g=c.createGain(); g.gain.value=0.28;
+      var lfo=c.createOscillator(); lfo.frequency.value=1.6; var lg=c.createGain(); lg.gain.value=0.26;
+      lfo.connect(lg); lg.connect(g.gain);                  // pulsowanie glosnosci
+      osc.connect(g); g.connect(pan); pan.connect(c.destination); osc.start(); lfo.start();
+      this.osc=osc; this.lfo=lfo; },
+    stop:function(){ try{ this.osc&&this.osc.stop(); this.lfo&&this.lfo.stop(); }catch(e){} }});
+
+  /* =====================================================================
+     SYSTEM GRY
+     ===================================================================== */
+  AFRAME.registerComponent('door-item',{schema:{room:{type:'int'}},init:function(){ var s=this;
+    this.el.sceneEl.systems.game.registerDoor(this.data.room,this.el);
+    this.el.addEventListener('click',function(){ s.el.sceneEl.systems.game.tryDoor(s.data.room,s.el); }); }});
+
+  AFRAME.registerComponent('pickup-key',{schema:{room:{type:'int'}},init:function(){ var s=this;
+    this.el.addEventListener('click',function(){ kickAudio();
+      var b=s.el.components['audio-beacon']; if(b) b.stop();
+      s.el.sceneEl.systems.game.solveRoom(s.data.room); s.el.setAttribute('visible',false); });
+    this.el.addEventListener('mouseenter',function(){ s.el.setAttribute('scale','1.3 1.3 1.3'); });
+    this.el.addEventListener('mouseleave',function(){ s.el.setAttribute('scale','1 1 1'); }); }});
+
+  // POKOJ 1: wajcha odblokowuje skrzynie; skrzynia odslania klucz
+  AFRAME.registerComponent('hidden-lever',{schema:{crate:{type:'string'}},init:function(){ var s=this,u=false;
+    this.el.addEventListener('click',function(){ if(u)return; u=true; kickAudio(); playCreak();
+      s.el.setAttribute('animation__pull','property: rotation; to: -60 0 0; dur: 400');
+      var cr=document.querySelector(s.data.crate); if(cr){ cr.classList.add('clickable'); cr.setAttribute('color','#6d4c41');
+        cr.sceneEl.systems.game.flashHUD('Cos szczeknelo... skrzynia odblokowana.'); } });
+    this.el.addEventListener('mouseenter',function(){ s.el.setAttribute('color','#c62828'); });
+    this.el.addEventListener('mouseleave',function(){ s.el.setAttribute('color','#7f0000'); }); }});
+
+  AFRAME.registerComponent('crate-cover',{schema:{key:{type:'string'}},init:function(){ var s=this,u=false;
+    this.el.addEventListener('click',function(){
+      if(u || !s.el.classList.contains('clickable')) return;   // dziala dopiero po wajsze
+      u=true; kickAudio(); playCreak(); var p=s.el.getAttribute('position');
+      s.el.setAttribute('animation__slide','property: position; to: '+p.x+' '+p.y+' '+(p.z+3)+'; dur: 700');
+      var k=document.querySelector(s.data.key); if(k){ k.setAttribute('visible',true); k.classList.add('clickable'); } }); }});
+
+  // POKOJ 2: kamien z wartoscia (cyfra rzymska) — klikamy rosnaco
+  AFRAME.registerComponent('roman-stone',{schema:{value:{type:'int'},room:{type:'int'}},init:function(){ var s=this;
+    this.el.addEventListener('click',function(){ s.el.sceneEl.systems.game.romanClick(s.data.room,s.data.value,s.el);
+      s.el.setAttribute('animation__pulse','property: scale; from: 1.3 1.3 1.3; to: 1 1 1; dur: 300'); }); }});
+
+  // POKOJ 3: sortowanie klocka — klocek skacze po postumentach; trafienie w niebieski rozwiazuje pokoj
+  AFRAME.registerComponent('sort-block',{schema:{pedestals:{type:'string'},correct:{type:'int'},key:{type:'string'}},
+    init:function(){ var s=this; this.idx=0; this.locked=false;
+      this.peds=this.data.pedestals.split(',').map(function(q){ return document.querySelector(q.trim()); });
+      this.el.addEventListener('click',function(){ if(s.locked) return; kickAudio(); playCreak();
+        s.idx=(s.idx+1)%s.peds.length;
+        var ped=s.peds[s.idx]; if(!ped) return; var p=ped.getAttribute('position');
+        s.el.setAttribute('animation__hop','property: position; to: '+p.x+' '+(p.y+0.9)+' '+p.z+'; dur: 350; easing: easeOutQuad');
+        if(s.idx===s.data.correct){ s.locked=true;
+          var k=document.querySelector(s.data.key);
+          if(k){ k.setAttribute('visible',true); k.setAttribute('scale','0.01 0.01 0.01');
+            k.setAttribute('animation__pop','property: scale; to: 1 1 1; dur: 650; easing: easeOutElastic'); }
+          s.el.sceneEl.systems.game.solveRoom(3); } });
+      this.el.addEventListener('mouseenter',function(){ if(!s.locked) s.el.setAttribute('scale','1.2 1.2 1.2'); });
+      this.el.addEventListener('mouseleave',function(){ if(!s.locked) s.el.setAttribute('scale','1 1 1'); }); }});
+
+  // POKOJ 4: mroczny obraz obracany klikiem o 90 st.; rownanie wszystkich do pionu odslania klucz
+  AFRAME.registerComponent('rot-painting',{init:function(){ var s=this;
+    var cv=document.createElement('canvas'); cv.width=256; cv.height=340; var x=cv.getContext('2d');
+    x.fillStyle='#0b0a0d'; x.fillRect(0,0,256,340);
+    var grd=x.createRadialGradient(128,95,8,128,95,130); grd.addColorStop(0,'rgba(205,210,220,0.55)'); grd.addColorStop(1,'rgba(11,10,13,0)');
+    x.fillStyle=grd; x.beginPath(); x.ellipse(128,100,62,84,0,0,Math.PI*2); x.fill();
+    x.fillStyle='#050506'; x.beginPath(); x.ellipse(104,92,11,17,0,0,Math.PI*2); x.fill(); x.beginPath(); x.ellipse(152,92,11,17,0,0,Math.PI*2); x.fill();
+    x.fillStyle='#0a0506'; x.beginPath(); x.ellipse(128,150,15,9,0,0,Math.PI*2); x.fill();
+    x.strokeStyle='rgba(0,0,0,0.6)'; x.lineWidth=10; x.strokeRect(0,0,256,340);
+    var tex=new THREE.CanvasTexture(cv);
+    var apply=function(){ var m=s.el.getObject3D('mesh'); if(!m){ s.el.addEventListener('object3dset',apply,{once:true}); return; }
+      m.material.map=tex; m.material.emissive=new THREE.Color('#0b0a0d'); m.material.emissiveIntensity=0.25; m.material.needsUpdate=true; };
+    apply();
+    var frame=document.createElement('a-box'); frame.setAttribute('width','1.75'); frame.setAttribute('height','2.25'); frame.setAttribute('depth','0.08');
+    frame.setAttribute('position','0 0 -0.06'); frame.setAttribute('color','#160f06'); frame.setAttribute('material','emissive:#241704; emissiveIntensity:0.3');
+    this.el.appendChild(frame);
+    this.angle=[90,180,270][Math.floor(Math.random()*3)]; this.el.setAttribute('rotation','0 0 '+this.angle);
+    this.el.addEventListener('click',function(){ var g=s.el.sceneEl.systems.game; if(g.solved[4]) return; kickAudio(); playCreak();
+      s.angle=(s.angle+90)%360; s.el.setAttribute('animation__spin','property: rotation; to: 0 0 '+s.angle+'; dur: 250'); g.checkPaintings(); }); }});
+
+  AFRAME.registerSystem('game',{
+    init:function(){ this.currentRoom=1; this.solved={1:false,2:false,3:false,4:false}; this.doors={};
+      this.roomX=[null,0,30,60,90]; this.romanExpected=[1,2,3,4]; this.romanProgress=0; this.sanity=3;
+      this.solids=[]; var s=this; setTimeout(function(){ s.hud=document.querySelector('#hud'); s.updateHUD(); },200); },
+    registerDoor:function(r,el){ this.doors[r]=el; },
+
+    moveSun:function(cx){ var sun=document.querySelector('#sun'), tgt=document.querySelector('#suntarget');
+      if(sun) sun.setAttribute('position', cx+' 12 6'); if(tgt) tgt.setAttribute('position', cx+' 0 0'); },
+
+    goToRoom:function(n){ this.currentRoom=n; var x=this.roomX[n]; var z=(n===3)?6.5:3;
+      document.querySelector('#rig').setAttribute('position', x+' 0 '+z); this.moveSun(x);
+      this.romanProgress=0; this.updateHUD(); },
+
+    solveRoom:function(n){ if(this.solved[n]) return; this.solved[n]=true; var d=this.doors[n];
+      if(d){ d.setAttribute('material','color: #1B5E20; emissive: #2E7D32; emissiveIntensity: 0.8'); }
+      this.flashHUD('Zagadka rozwiazana!'); this.updateHUD();
+      if(n===3){ var s=this; this.flashHUD('Masz klucz! Uciekasz z mroku...'); setTimeout(function(){ s.goToRoom(4); },1600); } },
+
+    tryDoor:function(n,el){ kickAudio(); if(n!==this.currentRoom) return;
+      if(!this.solved[n]){ this.flashHUD('Zablokowane — rozwiaz zagadke!'); playCreak(); return; }
+      var p=el.getAttribute('position'); el.setAttribute('animation__open','property: position; to: '+p.x+' '+(p.y+5)+' '+p.z+'; dur: 800');
+      var s=this; if(n===4){ setTimeout(function(){ s.win(); },800); } else { setTimeout(function(){ s.goToRoom(n+1); },850); } },
+
+    romanClick:function(room,value,el){ kickAudio(); if(room!==this.currentRoom || this.solved[room]) return;
+      if(value===this.romanExpected[this.romanProgress]){ this.romanProgress++;
+        el.setAttribute('material','emissive: #00e676; emissiveIntensity: 0.9; color:#2e7d32');
+        if(this.romanProgress===this.romanExpected.length) this.solveRoom(room);
+        else this.flashHUD('Dobrze... ('+this.romanProgress+'/4)'); }
+      else { this.wrongAnswer(); } },
+
+    wrongAnswer:function(){ this.romanProgress=0; this.sanity--; playStinger();
+      this.bigFlash(this.sanity<=0?0.95:0.6);
+      // reset podswietlenia kamieni
+      document.querySelectorAll('[roman-stone]').forEach(function(st){ st.setAttribute('material','emissive: #1A237E; emissiveIntensity: 0.7; color:#3949AB'); });
+      if(this.sanity<=0){ this.flashHUD('Tracisz zmysly! Zagadka od nowa.'); this.sanity=3; }
+      else this.flashHUD('ZLE! Zmysly: '+this.sanity+'/3'); this.updateHUD(); },
+
+    bigFlash:function(op){ var rf=document.querySelector('#redflash');
+      rf.setAttribute('animation__f','property: material.opacity; from: 0; to: '+op+'; dur: 160; dir: alternate; loop: 4'); },
+
+    checkPaintings:function(){ if(this.solved[4]) return;
+      var all=document.querySelectorAll('[rot-painting]'); var ok=all.length>0;
+      all.forEach(function(p){ var c=p.components['rot-painting']; if(!c || (c.angle%360)!==0) ok=false; });
+      if(ok){ var k=document.querySelector('#key4');
+        if(k){ k.setAttribute('visible',true); k.classList.add('clickable');
+          k.setAttribute('animation__pop','property: scale; to: 1 1 1; dur: 700; easing: easeOutElastic'); }
+        playStinger(); this.flashHUD('Obrazy ulozone! Klucz sie zmaterializowal.'); } },
+
+    win:function(){ document.querySelector('#sky').setAttribute('color','#cfd8dc');
+      this.sceneEl.setAttribute('fog','type: linear; color: #cfd8dc; near: 5; far: 140');
+      if(this.hud) this.hud.setAttribute('text','value: UCIEKLES ZYWY! Gratulacje.; align: center; width: 2; color: #111'); },
+
+    updateHUD:function(){ if(!this.hud) return; var s=this.solved[this.currentRoom], m='';
+      if(this.currentRoom===1) m=s?'Drzwi otwarte — kliknij drzwi':'Pokoj 1/4 — znajdz wajche, potem skrzynie';
+      if(this.currentRoom===2) m=s?'Drzwi otwarte — kliknij drzwi':'Pokoj 2/4 — klikaj cyfry rzymskie ROSNACO. Zmysly: '+this.sanity+'/3';
+      if(this.currentRoom===3) m=s?'Uciekasz...':'Pokoj 3/4 — klikaj artefakt, az stanie na pudle w swoim kolorze';
+      if(this.currentRoom===4) m=s?'UCIEKAJ! kliknij drzwi':'Pokoj 4/4 — obroc wszystkie obrazy do pionu, potem wez klucz';
+      this.hud.setAttribute('text','value: '+m+'; align: center; width: 1.8; color: #e0e0e0'); },
+    flashHUD:function(txt){ if(!this.hud) return; var s=this;
+      this.hud.setAttribute('text','value: '+txt+'; align: center; width: 1.8; color: #ff5252');
+      clearTimeout(this._ft); this._ft=setTimeout(function(){ s.updateHUD(); },1300); }
+  });
+
+  window.addEventListener('load',function(){ var sc=document.querySelector('a-scene'); if(sc) sc.addEventListener('enter-vr',kickAudio); });
+  </script>
+</head>
+
+<body>
+  <a-scene fog="type: linear; color: #050507; near: 2; far: 18">
+    <a-sky id="sky" color="#050507"></a-sky>
+    <a-light type="ambient" color="#34343f" intensity="0.18"></a-light>
+    <!-- JEDYNE swiatlo rzucajace cien (przesuwa sie za graczem) -->
+    <a-entity id="suntarget" position="0 0 0"></a-entity>
+    <a-entity id="sun" position="0 12 6"
+      light="type: directional; intensity: 0.32; color: #7585aa; target: #suntarget;
+             castShadow: true; shadowMapWidth: 1024; shadowMapHeight: 1024;
+             shadowCameraLeft: -10; shadowCameraRight: 10; shadowCameraTop: 10; shadowCameraBottom: -10;
+             shadowCameraNear: 1; shadowCameraFar: 30"></a-entity>
+
+    <!-- ====== GRACZ ====== -->
+    <a-entity id="rig" position="0 0 3" player-move>
+      <a-camera id="cam" wasd-controls="enabled: false" audio-listener-rig>
+        <a-cursor color="#ff5252" raycaster="objects: .clickable; far: 120"></a-cursor>
+        <a-entity id="hud" position="0 -0.6 -1" text="value: ...; align: center; width: 1.8; color: #e0e0e0"></a-entity>
+        <a-light type="point" intensity="1.1" distance="9" decay="1.0" color="#fff5e0" position="0 0.1 -0.2"></a-light>
+        <a-plane id="redflash" position="0 0 -0.5" width="3" height="3"
+                 material="color: #c00000; opacity: 0; transparent: true; shader: flat"></a-plane>
+      </a-camera>
+      <a-entity laser-controls="hand: right" raycaster="objects: .clickable; far: 120" line="color: #ff5252"></a-entity>
+      <a-entity laser-controls="hand: left"  raycaster="objects: .clickable; far: 120" line="color: #ff5252"></a-entity>
+    </a-entity>
+
+    <!-- ================= POKOJ 1 (x=0) — WAJCHA + SKRZYNIA ================= -->
+    <a-box position="0 0 0"  width="10" height="0.2" depth="10" stone-mat="color: #1f1f24; repeat: 4" shadow="receive: true"></a-box>
+    <a-box position="0 4 0"  width="10" height="0.2" depth="10" color="#0a0a0c"></a-box>
+    <a-box position="0 2 -5" width="10" height="4" depth="0.2" stone-mat shadow="receive: true" solid></a-box>
+    <a-box position="-5 2 0" width="0.2" height="4" depth="10" stone-mat shadow="receive: true" solid></a-box>
+    <a-box position="0 2 5"  width="10" height="4" depth="0.2" stone-mat shadow="receive: true" solid></a-box>
+    <a-box position="5 2 0"  width="0.2" height="4" depth="10" stone-mat shadow="receive: true" solid></a-box>
+    <a-box position="-4.7 3 -3" width="0.2" height="0.4" depth="0.2" color="#ff8a3d" material="emissive: #ff6d00; emissiveIntensity: 1">
+      <a-light type="point" color="#ff7a18" intensity="1" distance="8" flicker></a-light></a-box>
+    <!-- ukryta wajcha (na bocznej scianie) -->
+    <a-cylinder class="clickable" hidden-lever="crate: #crate1" position="-4.7 1.5 2" radius="0.07" height="0.8" rotation="0 0 90"
+                color="#7f0000" material="emissive: #b71c1c; emissiveIntensity: 0.4"></a-cylinder>
+    <a-entity position="-4.5 2.2 2" text="value: ?; align: center; width: 3; color: #b71c1c"></a-entity>
+    <!-- klucz pod skrzynia -->
+    <a-octahedron id="key1" pickup-key="room: 1" position="0 0.4 0" radius="0.35" color="#FFD600"
+                  material="emissive: #FFC107; emissiveIntensity: 0.6" visible="false"
+                  animation="property: rotation; to: 0 360 0; loop: true; dur: 3000; easing: linear"></a-octahedron>
+    <!-- skrzynia (klikalna dopiero po wajsze) -->
+    <a-box id="crate1" crate-cover="key: #key1" position="0 0.6 0" width="1.4" height="1.2" depth="1.4" color="#3a2a22"
+           shadow="cast: true; receive: true" solid></a-box>
+    <a-box class="clickable" door-item="room: 1" position="4.8 2 0" width="0.3" height="4" depth="3" material="color: #5D1A1A"></a-box>
+
+    <!-- ================= POKOJ 2 (x=30) — CYFRY RZYMSKIE ROSNACO ================= -->
+    <a-box position="30 0 0"  width="10" height="0.2" depth="10" stone-mat="color: #1f1f24; repeat: 4" shadow="receive: true"></a-box>
+    <a-box position="30 4 0"  width="10" height="0.2" depth="10" color="#0a0a0c"></a-box>
+    <a-box position="30 2 -5" width="10" height="4" depth="0.2" stone-mat shadow="receive: true" solid></a-box>
+    <a-box position="25 2 0"  width="0.2" height="4" depth="10" stone-mat shadow="receive: true" solid></a-box>
+    <a-box position="30 2 5"  width="10" height="4" depth="0.2" stone-mat shadow="receive: true" solid></a-box>
+    <a-box position="35 2 0"  width="0.2" height="4" depth="10" stone-mat shadow="receive: true" solid></a-box>
+    <a-entity position="30 3.2 -4.7" text="value: ZAGADKA:\nObudz kamienie od najmniejszej liczby.; align: center; width: 5; color: #ff5252"></a-entity>
+    <a-box position="25.3 3 0" width="0.2" height="0.4" depth="0.2" color="#ff8a3d" material="emissive: #ff6d00; emissiveIntensity: 1">
+      <a-light type="point" color="#ff7a18" intensity="0.9" distance="8" flicker></a-light></a-box>
+    <!-- kamienie w POMIESZANEJ kolejnosci; gracz musi czytac cyfry rzymskie -->
+    <a-sphere class="clickable" roman-stone="value: 3; room: 2" position="27 1.3 -4" radius="0.4" color="#3949AB" material="emissive:#1A237E; emissiveIntensity:0.7" shadow="cast:true"></a-sphere>
+    <a-entity position="27 2 -4" text="value: III; align: center; width: 4; color: #fff"></a-entity>
+    <a-sphere class="clickable" roman-stone="value: 1; room: 2" position="29 1.3 -4" radius="0.4" color="#3949AB" material="emissive:#1A237E; emissiveIntensity:0.7" shadow="cast:true"></a-sphere>
+    <a-entity position="29 2 -4" text="value: I; align: center; width: 4; color: #fff"></a-entity>
+    <a-sphere class="clickable" roman-stone="value: 4; room: 2" position="31 1.3 -4" radius="0.4" color="#3949AB" material="emissive:#1A237E; emissiveIntensity:0.7" shadow="cast:true"></a-sphere>
+    <a-entity position="31 2 -4" text="value: IV; align: center; width: 4; color: #fff"></a-entity>
+    <a-sphere class="clickable" roman-stone="value: 2; room: 2" position="33 1.3 -4" radius="0.4" color="#3949AB" material="emissive:#1A237E; emissiveIntensity:0.7" shadow="cast:true"></a-sphere>
+    <a-entity position="33 2 -4" text="value: II; align: center; width: 4; color: #fff"></a-entity>
+    <a-box class="clickable" door-item="room: 2" position="34.8 2 0" width="0.3" height="4" depth="3" material="color: #5D1A1A"></a-box>
+
+    <!-- ================= POKOJ 3 (x=60) — SORTOWANIE KLOCKA DO PUDELKA ================= -->
+    <a-box position="60 0 0"  width="16" height="0.2" depth="16" stone-mat="color: #161619; repeat: 6" shadow="receive: true"></a-box>
+    <a-box position="60 4 0"  width="16" height="0.2" depth="16" color="#050506"></a-box>
+    <a-box position="60 2 -8" width="16" height="4" depth="0.2" stone-mat shadow="receive:true" solid></a-box>
+    <a-box position="60 2 8"  width="16" height="4" depth="0.2" stone-mat shadow="receive:true" solid></a-box>
+    <a-box position="52 2 0"  width="0.2" height="4" depth="16" stone-mat shadow="receive:true" solid></a-box>
+    <a-box position="68 2 0"  width="0.2" height="4" depth="16" stone-mat shadow="receive:true" solid></a-box>
+    <a-entity position="60 3.3 -7.7" text="value: ZAGADKA:\nKlikaj artefakt, az spocznie na pudle w swoim kolorze.; align: center; width: 7; color: #ff5252"></a-entity>
+    <!-- pochodnia -->
+    <a-box position="52.3 3 -3" width="0.2" height="0.4" depth="0.2" color="#ff8a3d" material="emissive: #ff6d00; emissiveIntensity: 1">
+      <a-light type="point" color="#ff7a18" intensity="0.9" distance="8" flicker></a-light></a-box>
+    <!-- trzy postumenty: czerwony, zielony, niebieski -->
+    <a-cylinder id="ped3a" position="57 0.5 -4" radius="0.6" height="1" color="#5a1414" material="emissive:#b71c1c; emissiveIntensity:0.35" shadow="cast:true; receive:true" solid></a-cylinder>
+    <a-cylinder id="ped3b" position="60 0.5 -4" radius="0.6" height="1" color="#14502a" material="emissive:#1b5e20; emissiveIntensity:0.35" shadow="cast:true; receive:true" solid></a-cylinder>
+    <a-cylinder id="ped3c" position="63 0.5 -4" radius="0.6" height="1" color="#14224f" material="emissive:#1a237e; emissiveIntensity:0.45" shadow="cast:true; receive:true" solid></a-cylinder>
+    <!-- niebieski klocek/artefakt — start na czerwonym postumencie -->
+    <a-box class="clickable" sort-block="pedestals: #ped3a, #ped3b, #ped3c; correct: 2; key: #key3"
+           position="57 1.4 -4" width="0.7" height="0.7" depth="0.7" color="#2979ff" material="emissive:#1565c0; emissiveIntensity:0.6" shadow="cast:true"
+           animation="property: rotation; to: 0 360 0; loop: true; dur: 6000; easing: linear"></a-box>
+    <!-- klucz materializuje sie po dopasowaniu -->
+    <a-octahedron id="key3" position="60 1.9 -4" radius="0.35" color="#FFD600" material="emissive:#FFB300; emissiveIntensity:0.5" visible="false" scale="0.01 0.01 0.01"
+                  animation="property: rotation; to: 0 360 0; loop: true; dur: 3000; easing: linear"></a-octahedron>
+
+    <!-- ================= POKOJ 4 (x=90) — OBRACANIE OBRAZOW ================= -->
+    <a-box position="90 0 0"  width="10" height="0.2" depth="10" stone-mat="color: #1f1f24; repeat: 4" shadow="receive: true"></a-box>
+    <a-box position="90 4 0"  width="10" height="0.2" depth="10" color="#0a0a0c"></a-box>
+    <a-box position="90 2 -5" width="10" height="4" depth="0.2" stone-mat shadow="receive:true" solid></a-box>
+    <a-box position="85 2 0"  width="0.2" height="4" depth="10" stone-mat shadow="receive:true" solid></a-box>
+    <a-box position="90 2 5"  width="10" height="4" depth="0.2" stone-mat shadow="receive:true" solid></a-box>
+    <a-box position="95 2 0"  width="0.2" height="4" depth="10" stone-mat shadow="receive:true" solid></a-box>
+    <a-entity position="90 3.4 -4.7" text="value: OSTATNI POKOJ\nObroc kazdy obraz do pionu (klik = 90 st.).; align: center; width: 6; color: #ff5252"></a-entity>
+    <a-box position="85.3 3 -3" width="0.2" height="0.4" depth="0.2" color="#ff8a3d" material="emissive: #ff6d00; emissiveIntensity: 1">
+      <a-light type="point" color="#ff3d00" intensity="0.9" distance="8" flicker></a-light></a-box>
+    <!-- trzy mroczne obrazy na tylnej scianie (kazdy losowo obrocony) -->
+    <a-plane class="clickable" rot-painting position="87 2 -4.85" width="1.5" height="2.0"></a-plane>
+    <a-plane class="clickable" rot-painting position="90 2 -4.85" width="1.5" height="2.0"></a-plane>
+    <a-plane class="clickable" rot-painting position="93 2 -4.85" width="1.5" height="2.0"></a-plane>
+    <!-- klucz materializuje sie na srodku po ulozeniu obrazow -->
+    <a-octahedron id="key4" pickup-key="room: 4" position="90 1.4 -1" radius="0.35" color="#FFD600"
+                  material="emissive:#FFB300; emissiveIntensity:0.5" visible="false" scale="0.01 0.01 0.01"
+                  animation="property: rotation; to: 0 360 0; loop: true; dur: 3000; easing: linear"></a-octahedron>
+    <a-box class="clickable" door-item="room: 4" position="94.8 2 0" width="0.3" height="4" depth="3" material="color: #5D1A1A"></a-box>
+
+  </a-scene>
+</body>
+</html>
