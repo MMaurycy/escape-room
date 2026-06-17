@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <title>VR Escape Room — HORROR v3</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <link rel="icon" href="data:,">
   <script src="aframe.min.js"></script>
 
   <script>
@@ -83,8 +84,10 @@
       window.addEventListener('keyup',function(e){ s.keys[e.code]=false; });
       this.el.sceneEl.addEventListener('thumbstickmoved',function(e){ s.axis.x=e.detail.x; s.axis.y=e.detail.y; });
       this.el.sceneEl.addEventListener('trackpadmoved',function(e){ s.axis.x=e.detail.x; s.axis.y=e.detail.y; });
+      this.el.sceneEl.addEventListener('trackpadtouchend',function(){ s.axis.x=0; s.axis.y=0; });
       this.el.sceneEl.addEventListener('abuttondown',function(){ s.tryJump(); });
       this.el.sceneEl.addEventListener('bbuttondown',function(){ s.tryJump(); });
+      this.el.sceneEl.addEventListener('menudown',function(){ s.tryJump(); });
     },
     tryJump:function(){ if(this.onGround){ this.vy=this.data.jump; this.onGround=false; } },
     collides:function(x,z){ var r=this.data.radius, S=this.el.sceneEl.systems.game.solids;
@@ -273,14 +276,16 @@
     <!-- ====== GRACZ ====== -->
     <a-entity id="rig" position="0 0 3" player-move>
       <a-camera id="cam" wasd-controls="enabled: false" audio-listener-rig>
-        <a-cursor color="#ff5252" raycaster="objects: .clickable; far: 120"></a-cursor>
+        <a-cursor color="#ff5252" cursor="fuse: false" raycaster="objects: .clickable; far: 120"></a-cursor>
         <a-entity id="hud" position="0 -0.6 -1" text="value: ...; align: center; width: 1.8; color: #e0e0e0"></a-entity>
         <a-light type="point" intensity="1.1" distance="9" decay="1.0" color="#fff5e0" position="0 0.1 -0.2"></a-light>
         <a-plane id="redflash" position="0 0 -0.5" width="3" height="3"
                  material="color: #c00000; opacity: 0; transparent: true; shader: flat"></a-plane>
       </a-camera>
-      <a-entity laser-controls="hand: right" raycaster="objects: .clickable; far: 120" line="color: #ff5252"></a-entity>
-      <a-entity laser-controls="hand: left"  raycaster="objects: .clickable; far: 120" line="color: #ff5252"></a-entity>
+      <a-entity laser-controls="hand: right" raycaster="objects: .clickable; far: 120" line="color: #ff5252"
+                cursor="fuse: false; rayOrigin: entity; downEvents: triggerdown; upEvents: triggerup"></a-entity>
+      <a-entity laser-controls="hand: left"  raycaster="objects: .clickable; far: 120" line="color: #ff5252"
+                cursor="fuse: false; rayOrigin: entity; downEvents: triggerdown; upEvents: triggerup"></a-entity>
     </a-entity>
 
     <!-- ================= POKOJ 1 (x=0) — WAJCHA + SKRZYNIA ================= -->
