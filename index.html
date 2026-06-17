@@ -82,6 +82,7 @@
       window.addEventListener('keydown',function(e){ s.keys[e.code]=true; if(e.code==='Space') s.tryJump(); });
       window.addEventListener('keyup',function(e){ s.keys[e.code]=false; });
       this.el.sceneEl.addEventListener('thumbstickmoved',function(e){ s.axis.x=e.detail.x; s.axis.y=e.detail.y; });
+      this.el.sceneEl.addEventListener('trackpadmoved',function(e){ s.axis.x=e.detail.x; s.axis.y=e.detail.y; });
       this.el.sceneEl.addEventListener('abuttondown',function(){ s.tryJump(); });
       this.el.sceneEl.addEventListener('bbuttondown',function(){ s.tryJump(); });
     },
@@ -117,22 +118,6 @@
     else { L.setPosition(p.x,p.y,p.z); L.setOrientation(f.x,f.y,f.z,u.x,u.y,u.z); }
   }});
 
-  /* DZWIEKOWA LATARNIA (klucz w labiryncie) — pulsujacy ton 3D z PannerNode */
-  AFRAME.registerComponent('audio-beacon',{init:function(){ this.on=false; },
-    tick:function(){ if(this.on||!AUDIO_STARTED||!ACTX) return; this.on=true; this.start(); },
-    start:function(){ var c=ACTX; var pos=this.el.object3D.getWorldPosition(new THREE.Vector3());
-      var pan=c.createPanner(); pan.panningModel='HRTF'; pan.distanceModel='inverse';
-      pan.refDistance=1; pan.maxDistance=40; pan.rolloffFactor=1.4;
-      if(pan.positionX){ pan.positionX.value=pos.x; pan.positionY.value=pos.y; pan.positionZ.value=pos.z; }
-      else pan.setPosition(pos.x,pos.y,pos.z);
-      var osc=c.createOscillator(); osc.type='sine'; osc.frequency.value=320;
-      var g=c.createGain(); g.gain.value=0.28;
-      var lfo=c.createOscillator(); lfo.frequency.value=1.6; var lg=c.createGain(); lg.gain.value=0.26;
-      lfo.connect(lg); lg.connect(g.gain);                  // pulsowanie glosnosci
-      osc.connect(g); g.connect(pan); pan.connect(c.destination); osc.start(); lfo.start();
-      this.osc=osc; this.lfo=lfo; },
-    stop:function(){ try{ this.osc&&this.osc.stop(); this.lfo&&this.lfo.stop(); }catch(e){} }});
-
   /* =====================================================================
      SYSTEM GRY
      ===================================================================== */
@@ -142,7 +127,6 @@
 
   AFRAME.registerComponent('pickup-key',{schema:{room:{type:'int'}},init:function(){ var s=this;
     this.el.addEventListener('click',function(){ kickAudio();
-      var b=s.el.components['audio-beacon']; if(b) b.stop();
       s.el.sceneEl.systems.game.solveRoom(s.data.room); s.el.setAttribute('visible',false); });
     this.el.addEventListener('mouseenter',function(){ s.el.setAttribute('scale','1.3 1.3 1.3'); });
     this.el.addEventListener('mouseleave',function(){ s.el.setAttribute('scale','1 1 1'); }); }});
@@ -272,7 +256,10 @@
 </head>
 
 <body>
-  <a-scene fog="type: linear; color: #050507; near: 2; far: 18">
+  <a-scene background="color: #050507"
+           renderer="antialias: true; colorManagement: true; foveationLevel: 1; highRefreshRate: true"
+           webxr="referenceSpaceType: local-floor; optionalFeatures: local-floor, bounded-floor"
+           fog="type: linear; color: #050507; near: 2; far: 18">
     <a-sky id="sky" color="#050507"></a-sky>
     <a-light type="ambient" color="#34343f" intensity="0.18"></a-light>
     <!-- JEDYNE swiatlo rzucajace cien (przesuwa sie za graczem) -->
